@@ -1,7 +1,7 @@
 import express from "express"
 const router = express.Router()
 
-import authController from "../controllers/auth.controller.js"
+import authController from "../controllers/authController.js"
 
 router.get("/test", (req, res) => {
   res.send("AUTH ROUTER WORKING");

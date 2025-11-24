@@ -8,7 +8,7 @@ import router from "./router/index.js";
 import cookieParser from "cookie-parser"
 
 const allowOrigins = [
-    "http://localhost:5173/"
+    "http://localhost:5173"
 ] 
 
 app.use(express.json())

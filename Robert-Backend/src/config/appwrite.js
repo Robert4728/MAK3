@@ -1,11 +1,9 @@
 import {
   Client,
-  TablesDB,
-  Avatars,
+  Databases,  // This is the correct import for Tables API in v20
   Storage,
   Account,
   Users,
-  Teams,
 } from "node-appwrite";
 
 import dotenv from "dotenv";
@@ -14,29 +12,19 @@ dotenv.config({ path: "./src/config/config.env"});
 const client = new Client()
   .setEndpoint(process.env.APPWRITE_ENDPOINT)
   .setProject(process.env.APPWRITE_PROJECT_ID)
-  .setKey(process.env.APPWRITE_SECRET_KEY);
+  .setKey(process.env.APPWRITE_API_KEY);
 
-const sessionClient = new Client()
-  .setEndpoint(process.env.APPWRITE_ENDPOINT)
-  .setProject(process.env.APPWRITE_PROJECT_ID);
-
-const users = new Users(client);
-const tablesDB = new TablesDB(client);
+const databases = new Databases(client);
 const account = new Account(client);
 const storage = new Storage(client);
-const avatars = new Avatars(client);
-const teams = new Teams(client);
+const users = new Users(client);
 
-
-const appwrite =  {
+const appwrite = {
   client,
-  sessionClient,
-  tablesDB,
+  databases,  // This handles both traditional databases and tables
   account,
   storage,
-  avatars,
-  users,
-  teams,
+  users
 };
 
-export default appwrite
+export default appwrite;
