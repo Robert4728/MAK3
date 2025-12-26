@@ -1,377 +1,305 @@
 // controllers/orderController.js
-import db from "../config/db.js";
-import { ErrorHandler } from "../utils/ErrorHandler.js";
-import SuccessHandler from "../utils/SuccessHandler.js";
-import { Query } from 'node-appwrite';
+import appwrite from "../config/appwrite.js";
+import { ID, Query } from 'node-appwrite';
 
-// Valid options for enums (from your Appwrite schema)
-const VALID_MATERIALS = ['pla', 'abs', 'petg', 'nylon'];
-const VALID_COLOURS = ['black', 'white', 'orange', 'blue'];
+console.log("🔄 ORDER CONTROLLER - Loading...");
 
-// Validation helper
-function validateOrderData(customerData, stlFiles, orderDetails) {
-  console.log('🔍 ORDER CONTROLLER - Starting validation');
+const { databases } = appwrite;
+
+const DATABASE_ID = process.env.APPWRITE_DATABASE_ID || '690ca284001cca2edff9';
+const CUSTOMERS_COLLECTION = 'CUSTOMERS';
+const ORDERS_COLLECTION = 'ORDERS';
+const STLS_COLLECTION = 'STLS';
+
+// Valid delivery address values (from your Appwrite enum)
+const VALID_DELIVERY_ADDRESSES = ['South C', 'Nairobi Town', 'Kikuyu', 'Roasters', 'Ruaka', 'Outer Ring'];
+
+console.log("🔧 ORDER CONTROLLER - Using Database ID:", DATABASE_ID);
+
+function generateOrderId() {
+  const timestamp = Date.now();
+  const random = Math.random().toString(36).substring(2, 8).toUpperCase();
+  return `ORD_${timestamp}_${random}`;
+}
+
+export const createOrder = async (req, res) => {
+  console.log('🎯 ORDER CONTROLLER - createOrder called');
+  console.log('📦 Request body:', JSON.stringify(req.body, null, 2));
   
-  // Validate customer data
-  if (!customerData) {
-    throw new ErrorHandler('Customer data is required', 400);
-  }
-
-  const requiredCustomerFields = ['first_name', 'last_name', 'email', 'phone', 'delivery_address'];
-  const missingCustomerFields = requiredCustomerFields.filter(field => !customerData[field]);
-  
-  if (missingCustomerFields.length > 0) {
-    throw new ErrorHandler(`Missing required customer fields: ${missingCustomerFields.join(', ')}`, 400);
-  }
-
-  // Validate phone is a valid number
-  const phoneAsInt = parseInt(customerData.phone.toString().replace(/\D/g, ''));
-  if (isNaN(phoneAsInt)) {
-    throw new ErrorHandler('Phone number must be a valid number', 400);
-  }
-
-  // Validate delivery address length
-  if (customerData.delivery_address.length > 255) {
-    throw new ErrorHandler('Delivery address must be 255 characters or less', 400);
-  }
-
-  // Validate STL files
-  if (!stlFiles || !Array.isArray(stlFiles) || stlFiles.length === 0) {
-    throw new ErrorHandler('At least one STL file is required', 400);
-  }
-
-  for (const [index, file] of stlFiles.entries()) {
-    if (!file.stl_file) {
-      throw new ErrorHandler(`STL file ${index + 1} must have stl_file field`, 400);
-    }
-    if (!file.material) {
-      throw new ErrorHandler(`STL file ${index + 1} must have material specified`, 400);
-    }
-    if (!VALID_MATERIALS.includes(file.material)) {
-      throw new ErrorHandler(`Invalid material for STL file ${index + 1}: "${file.material}". Must be one of: ${VALID_MATERIALS.join(', ')}`, 400);
-    }
-    if (!file.colour) {
-      throw new ErrorHandler(`STL file ${index + 1} must have colour specified`, 400);
-    }
-    if (!VALID_COLOURS.includes(file.colour)) {
-      throw new ErrorHandler(`Invalid colour for STL file ${index + 1}: "${file.colour}". Must be one of: ${VALID_COLOURS.join(', ')}`, 400);
-    }
-    if (!file.scale && file.scale !== 0) {
-      throw new ErrorHandler(`STL file ${index + 1} must have scale specified`, 400);
-    }
-    if (!file.cost && file.cost !== 0) {
-      throw new ErrorHandler(`STL file ${index + 1} must have cost specified`, 400);
-    }
-  }
-
-  // Validate order details
-  if (!orderDetails) {
-    throw new ErrorHandler('Order details are required', 400);
-  }
-  if (!orderDetails.price) {
-    throw new ErrorHandler('Order price is required', 400);
-  }
-  if (!orderDetails.delivery_type) {
-    throw new ErrorHandler('Delivery type is required', 400);
-  }
-
-  console.log('✅ ORDER CONTROLLER - Validation passed');
-}
-
-// Customer management
-async function createOrFindCustomer(customerData) {
   try {
-    console.log('🔍 CUSTOMER - Checking for existing customer:', customerData.email);
+    const { customerData, stlFiles = [], orderDetails = {} } = req.body;
+
+    if (!customerData || !customerData.email) {
+      return res.status(400).json({
+        success: false,
+        error: 'Customer email is required'
+      });
+    }
+
+    console.log('✅ Valid customer data received:', customerData.email);
     
-    // Check if customer already exists
-    const existingCustomer = await db.CUSTOMERS.findOne([
-      Query.equal('email', customerData.email)
-    ]);
-
-    if (existingCustomer) {
-      console.log('✅ CUSTOMER - Found existing customer:', existingCustomer.$id);
-      return {
-        customerId: existingCustomer.$id,
-        firstName: existingCustomer.first_name,
-        lastName: existingCustomer.last_name,
-        phone: existingCustomer.phone,
-        deliveryAddress: existingCustomer.delivery_address
-      };
-    }
-
-    // Create new customer
-    console.log('🔍 CUSTOMER - Creating new customer');
-    const phoneNumber = parseInt(customerData.phone.toString().replace(/\D/g, '')) || 0;
-    const deliveryAddress = customerData.delivery_address.toString().substring(0, 255);
-
-    const newCustomer = await db.CUSTOMERS.create({
-      first_name: customerData.first_name,
-      last_name: customerData.last_name,
-      email: customerData.email,
-      phone: phoneNumber,
-      delivery_address: deliveryAddress
-    });
-
-    console.log('✅ CUSTOMER - Created new customer:', newCustomer.$id);
-    return {
-      customerId: newCustomer.$id,
-      firstName: newCustomer.first_name,
-      lastName: newCustomer.last_name,
-      phone: newCustomer.phone,
-      deliveryAddress: newCustomer.delivery_address
-    };
-  } catch (error) {
-    console.error('❌ CUSTOMER - Processing failed:', error.message);
-    throw new ErrorHandler(`Customer processing failed: ${error.message}`, 400);
-  }
-}
-
-// STL file creation
-async function createSTLFile(fileData) {
-  try {
-    console.log('🔍 STL - Creating STL file with data:', fileData);
-
-    // Prepare STL data with proper types
-    const stlData = {
-      stl_file: fileData.stl_file, // Required URL
-      material: fileData.material, // Required enum
-      colour: fileData.colour, // Required enum
-      scale: parseFloat(fileData.scale) || 1.0, // Required double
-      cost: parseInt(fileData.cost) || 0, // Required integer
-      weight: parseFloat(fileData.weight) || 0 // Optional double
-    };
-
-    console.log('🔍 STL - Final STL data:', stlData);
-
-    const stlFile = await db.STLS.create(stlData);
-    console.log('✅ STL - Created STL file:', stlFile.$id);
-    return stlFile.$id;
-  } catch (error) {
-    console.error('❌ STL - Creation failed:', error.message);
-    throw new ErrorHandler(`STL file creation failed: ${error.message}`, 400);
-  }
-}
-
-// Order record creation - UPDATED: Only send fields that exist in ORDERS collection
-async function createOrderRecord({ customer, stlId, orderDetails, deliveryAddress, stlFileUrl }) {
-  try {
-    console.log('🔍 ORDER - Creating order record');
+    // 1. Validate and prepare delivery address
+    const deliveryAddress = orderDetails.delivery_address || 'Nairobi Town';
     
-    const orderData = {
-      // ONLY fields that exist in ORDERS collection
-      customer_id: customer.customerId,
-      first_name: customer.firstName,
-      last_name: customer.lastName,
-      stl_id: stlId,
-      stl_file: stlFileUrl,
-      status: 'order_made',
-      time_of_placement: new Date().toISOString(),
-      drop_off_location: deliveryAddress,
-      delivery_type: orderDetails.delivery_type,
-      price: parseFloat(orderDetails.price),
-      
-      // REMOVED: phone, total_amount, notes, shipping_address (they don't exist in ORDERS)
-    };
-
-    console.log('🔍 ORDER - Final order data:', orderData);
-    const order = await db.ORDERS.create(orderData);
-    console.log('✅ ORDER - Created order:', order.$id);
-    return order;
-  } catch (error) {
-    console.error('❌ ORDER - Record creation failed:', error.message);
-    throw new ErrorHandler(`Order creation failed: ${error.message}`, 400);
-  }
-}
-
-// Main order creation function
-async function createOrder(req, res, next) {
-  try {
-    const { customerData, stlFiles, orderDetails } = req.body;
-
-    console.log('🎯 ORDER - Starting order creation process');
-    console.log('📦 ORDER - Customer Data:', customerData);
-    console.log('📦 ORDER - STL Files:', stlFiles);
-    console.log('📦 ORDER - Order Details:', orderDetails);
-
-    // 1. Validate all required data exists
-    validateOrderData(customerData, stlFiles, orderDetails);
+    if (!VALID_DELIVERY_ADDRESSES.includes(deliveryAddress)) {
+      return res.status(400).json({
+        success: false,
+        error: `Invalid delivery address. Must be one of: ${VALID_DELIVERY_ADDRESSES.join(', ')}`
+      });
+    }
 
     // 2. Create or find customer
-    const customer = await createOrFindCustomer(customerData);
-    console.log('✅ ORDER - Customer processed:', customer.customerId);
-
-    // 3. Create STL records
-    const stlIds = [];
-    const stlFileUrls = [];
+    console.log('🔍 Looking for existing customer:', customerData.email);
     
-    for (const file of stlFiles) {
-      const stlId = await createSTLFile(file);
-      stlIds.push(stlId);
-      stlFileUrls.push(file.stl_file); // Store the URL for order creation
-      console.log('✅ ORDER - STL file created:', stlId);
-    }
+    let customerId;
+    try {
+      const existingCustomers = await databases.listDocuments(
+        DATABASE_ID,
+        CUSTOMERS_COLLECTION,
+        [Query.equal('email', customerData.email.trim())]
+      );
 
-    // 4. Create orders (one order per STL file)
-    const orders = [];
-    for (let i = 0; i < stlIds.length; i++) {
-      const stlId = stlIds[i];
-      const stlFileUrl = stlFileUrls[i];
-      
-      console.log('🔍 ORDER - Creating order for STL:', stlId);
-      
-      const order = await createOrderRecord({
-        customer,
-        stlId,
-        orderDetails,
-        deliveryAddress: customer.deliveryAddress,
-        stlFileUrl: stlFileUrl // Pass the STL file URL
+      if (existingCustomers.total > 0) {
+        customerId = existingCustomers.documents[0].$id;
+        console.log('✅ Found existing customer:', customerId);
+      } else {
+        customerId = ID.unique();
+        const customerDoc = {
+          first_name: customerData.first_name || '',
+          last_name: customerData.last_name || '',
+          email: customerData.email.trim(),
+          phone: parseInt(customerData.phone?.replace(/\D/g, '') || '0') || 0,
+          delivery_address: orderDetails.delivery_address || 'Not specified' // Customer's actual address, not pickup location
+        };
+        
+        console.log('📝 Creating customer with data:', customerDoc);
+        
+        await databases.createDocument(
+          DATABASE_ID,
+          CUSTOMERS_COLLECTION,
+          customerId,
+          customerDoc
+        );
+        console.log('✅ Created new customer:', customerId);
+      }
+    } catch (customerError) {
+      console.error('❌ Customer processing failed:', customerError);
+      return res.status(500).json({
+        success: false,
+        error: `Customer processing failed: ${customerError.message}`
       });
-      
-      orders.push(order);
-      console.log('✅ ORDER - Order created:', order.$id);
     }
 
-    console.log('🎉 ORDER - All orders created successfully');
-    return SuccessHandler(
-      'Order created successfully', 
-      201, 
-      res, 
-      { 
-        message: `Created ${orders.length} order(s) successfully`,
-        orders: orders.map(order => ({
-          id: order.$id,
-          customer_id: order.customer_id,
-          stl_id: order.stl_id,
-          status: order.status
-        }))
-      }
-    );
-  } catch (error) {
-    console.error('❌ ORDER - Creation failed:', error.message);
-    next(error);
-  }
-}
-
-// Get order with full details
-async function getOrderWithDetails(req, res, next) {
-  try {
-    const { id } = req.params;
-    console.log('📄 ORDER - Getting order details:', id);
+    // 3. Generate order ID
+    const orderId = generateOrderId();
+    console.log('📋 Generated Order ID:', orderId);
     
-    const order = await db.ORDERS.get(id);
-    const customer = await db.CUSTOMERS.get(order.customer_id);
-    const stlFile = await db.STLS.get(order.stl_id);
+    try {
+      const createdOrders = [];
+      const linkedSTLs = [];
+      let totalOrderPrice = 0;
 
-    const orderWithDetails = {
-      ...order,
-      customer: {
-        id: customer.$id,
-        first_name: customer.first_name,
-        last_name: customer.last_name,
-        email: customer.email,
-        phone: customer.phone,
-        delivery_address: customer.delivery_address,
-        created_at: customer.created_at,
-        updated_at: customer.updated_at
-      },
-      stl_file: {
-        id: stlFile.$id,
-        stl_file: stlFile.stl_file,
-        material: stlFile.material,
-        colour: stlFile.colour,
-        scale: stlFile.scale,
-        weight: stlFile.weight,
-        cost: stlFile.cost
+      // 4a. Create orders for STL files (one per STL)
+      if (stlFiles && stlFiles.length > 0) {
+        console.log(`🔄 Creating ${stlFiles.length} order(s) for STL files...`);
+        
+        for (const stlFile of stlFiles) {
+          try {
+            const orderDocId = ID.unique();
+            const stlPrice = parseFloat(stlFile.price) || 0;
+            totalOrderPrice += stlPrice;
+            
+          const orderData = {
+            order_id: orderId,
+            customer_id: customerId,
+            status: 'order_made',
+            price: stlPrice,
+            delivery_type: orderDetails.delivery_type || 'standard',
+            drop_off_location: deliveryAddress,
+            payment_method: orderDetails.payment_method || 'pending', // ADD THIS
+            stl_id: stlFile.metadata_id || 'unknown',
+          };
+
+            console.log(`📝 Creating order for STL ${stlFile.metadata_id}`);
+            
+            const order = await databases.createDocument(
+              DATABASE_ID,
+              ORDERS_COLLECTION,
+              orderDocId,
+              orderData
+            );
+            
+            createdOrders.push(order);
+            
+            // Update STL file with order ID
+            if (stlFile.metadata_id) {
+              try {
+                await databases.updateDocument(
+                  DATABASE_ID,
+                  STLS_COLLECTION,
+                  stlFile.metadata_id,
+                  {
+                    stl_order: orderId
+                  }
+                );
+                linkedSTLs.push({
+                  metadata_id: stlFile.metadata_id,
+                  stl_id: stlFile.stl_id || stlFile.file_id || 'unknown'
+                });
+                console.log(`✅ Linked STL ${stlFile.metadata_id} to order ${orderId}`);
+              } catch (stlError) {
+                console.warn(`⚠️ Could not link STL ${stlFile.metadata_id}:`, stlError.message);
+              }
+            }
+            
+          } catch (fileOrderError) {
+            console.error(`❌ Failed to create order for STL:`, fileOrderError);
+          }
+        }
       }
-    };
 
-    console.log('✅ ORDER - Details fetched successfully');
-    return SuccessHandler(
-      'Order details fetched successfully',
-      200,
-      res,
-      { order: orderWithDetails }
-    );
+      // 4b. Create order for regular items (if any)
+      // Note: This assumes regular items are included in orderDetails.price
+      // If you need separate handling, you'll need to send regular items from frontend
+      const orderPriceFromDetails = parseFloat(orderDetails.price) || 0;
+      
+      // Only create a regular item order if there are no STL files OR if price differs
+      if (stlFiles.length === 0 || orderPriceFromDetails > totalOrderPrice) {
+        const orderDocId = ID.unique();
+        const regularItemsPrice = stlFiles.length === 0 ? orderPriceFromDetails : (orderPriceFromDetails - totalOrderPrice);
+        
+        if (regularItemsPrice > 0) {
+          const orderData = {
+            order_id: orderId,
+            customer_id: customerId,
+            status: 'order_made',
+            price: regularItemsPrice,
+            delivery_type: orderDetails.delivery_type || 'standard',
+            drop_off_location: deliveryAddress,
+            payment_method: orderDetails.payment_method || 'pending',
+            stl_id: 'tax_and_shipping',
+          };
+
+          console.log('📝 Creating order for regular items');
+          
+          const order = await databases.createDocument(
+            DATABASE_ID,
+            ORDERS_COLLECTION,
+            orderDocId,
+            orderData
+          );
+          
+          createdOrders.push(order);
+          totalOrderPrice += regularItemsPrice;
+        }
+      }
+
+      // Check if any orders were created
+      if (createdOrders.length === 0) {
+        throw new Error('No orders were created');
+      }
+
+      console.log(`✅ Created ${createdOrders.length} order document(s) for order ${orderId}`);
+      console.log(`💰 Total order price: $${totalOrderPrice.toFixed(2)}`);
+
+      // 5. Return success response
+      return res.status(201).json({
+        success: true,
+        message: `Order created successfully with ${createdOrders.length} item(s)`,
+        order: {
+          id: createdOrders[0].$id, // Return first order ID
+          order_id: orderId,
+          customer_id: customerId,
+          customer_name: `${customerData.first_name || ''} ${customerData.last_name || ''}`.trim(),
+          customer_email: customerData.email,
+          total: totalOrderPrice,
+          status: 'order_made',
+          delivery_type: orderDetails.delivery_type || 'standard',
+          created_at: new Date().toISOString(),
+          stl_files: linkedSTLs,
+          order_count: createdOrders.length
+        }
+      });
+
+    } catch (orderError) {
+      console.error('❌ Order creation failed:', orderError);
+      return res.status(500).json({
+        success: false,
+        error: `Order creation failed: ${orderError.message}`
+      });
+    }
+
   } catch (error) {
-    console.error('❌ ORDER - Get details failed:', error.message);
-    next(new ErrorHandler('Order not found', 404));
-  }
-}
-
-// Get all orders for a customer
-async function getCustomerOrders(req, res, next) {
-  try {
-    const { customerId } = req.params;
-    console.log('📋 ORDER - Getting orders for customer:', customerId);
+    console.error('🔥 ORDER CONTROLLER ERROR:', error.message);
     
-    const orders = await db.ORDERS.list([
-      Query.equal('customer_id', customerId)
+    return res.status(500).json({
+      success: false,
+      error: 'Internal server error',
+      message: error.message
+    });
+  }
+};
+
+export const debugDatabase = async (req, res) => {
+  try {
+    console.log('🔍 ORDER DEBUG - Checking database...');
+    
+    const [customers, orders, stls] = await Promise.all([
+      databases.listDocuments(DATABASE_ID, CUSTOMERS_COLLECTION, [Query.limit(2)]),
+      databases.listDocuments(DATABASE_ID, ORDERS_COLLECTION, [Query.limit(2)]),
+      databases.listDocuments(DATABASE_ID, STLS_COLLECTION, [Query.limit(5)])
     ]);
     
-    const ordersWithDetails = await Promise.all(
-      orders.documents.map(async (order) => {
-        const customer = await db.CUSTOMERS.get(order.customer_id);
-        const stlFile = await db.STLS.get(order.stl_id);
-        
-        return {
-          ...order,
-          customer_name: `${customer.first_name} ${customer.last_name}`,
-          customer_email: customer.email,
-          stl_file_url: stlFile.stl_file,
-          stl_material: stlFile.material,
-          stl_colour: stlFile.colour
-        };
-      })
-    );
-
-    console.log('✅ ORDER - Customer orders fetched:', ordersWithDetails.length);
-    return SuccessHandler(
-      'Customer orders fetched successfully',
-      200,
-      res,
-      { 
-        orders: ordersWithDetails,
-        total: orders.total
-      }
-    );
-  } catch (error) {
-    console.error('❌ ORDER - Get customer orders failed:', error.message);
-    next(error);
-  }
-}
-
-// Get valid options for frontend dropdowns
-async function getSTLOptions(req, res, next) {
-  try {
-    console.log('⚙️ ORDER - Getting STL options');
+    console.log('📊 Database status:', {
+      customers: customers.total,
+      orders: orders.total,
+      stls: stls.total
+    });
     
-    return SuccessHandler(
-      'STL options fetched successfully',
-      200,
-      res,
-      {
-        materials: VALID_MATERIALS,
-        colours: VALID_COLOURS
+    return res.json({
+      success: true,
+      database: DATABASE_ID,
+      valid_delivery_addresses: VALID_DELIVERY_ADDRESSES,
+      collections: {
+        customers: { 
+          count: customers.total,
+          sample: customers.documents.map(c => ({
+            id: c.$id,
+            name: `${c.first_name} ${c.last_name}`,
+            email: c.email,
+            delivery_address: c.delivery_address
+          }))
+        },
+        orders: { 
+          count: orders.total,
+          sample: orders.documents.map(o => ({
+            id: o.$id,
+            order_id: o.order_id,
+            customer_id: o.customer_id,
+            stl_id: o.stl_id,
+            price: o.price || 'N/A'
+          }))
+        },
+        stls: { 
+          count: stls.total,
+          sample: stls.documents.map(s => ({
+            id: s.$id,
+            stl_id: s.stl_id,
+            stl_order: s.stl_order,
+            price: s.price ? `$${(s.price / 100).toFixed(2)}` : 'N/A'
+          }))
+        }
       }
-    );
+    });
+    
   } catch (error) {
-    console.error('❌ ORDER - Get STL options failed:', error.message);
-    next(error);
+    console.error('❌ DEBUG failed:', error);
+    return res.status(500).json({
+      success: false,
+      error: 'Debug failed',
+      message: error.message
+    });
   }
-}
-
-// Export all functions
-export {
-  createOrder,
-  getOrderWithDetails,
-  getCustomerOrders,
-  getSTLOptions
 };
 
-// Export default for backward compatibility
-export default {
-  createOrder,
-  getOrderWithDetails,
-  getCustomerOrders,
-  getSTLOptions
-};
+console.log("✅ ORDER CONTROLLER - Loaded successfully");

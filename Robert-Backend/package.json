@@ -11,10 +11,12 @@
   "license": "ISC",
   "description": "",
   "dependencies": {
+    "appwrite": "^21.5.0",
     "cookie-parser": "^1.4.7",
     "cors": "^2.8.5",
     "dotenv": "^17.2.3",
     "express": "^5.1.0",
+    "form-data": "^4.0.5",
     "multer": "^1.4.5-lts.1",
     "node-appwrite": "^20.3.0",
     "node-fetch": "^3.3.2"
